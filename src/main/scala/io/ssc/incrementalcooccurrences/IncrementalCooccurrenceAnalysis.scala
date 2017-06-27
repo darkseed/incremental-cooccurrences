@@ -3,7 +3,6 @@ package io.ssc.incrementalcooccurrences
 import it.unimi.dsi.fastutil.ints.{Int2IntOpenHashMap, IntArrayList, IntArraySet}
 
 class IncrementalCooccurrenceAnalysis(
-    interactions: TraversableOnce[Interaction],
     numUsers: Int,
     numItems: Int,
     fMax: Int,
@@ -14,11 +13,13 @@ class IncrementalCooccurrenceAnalysis(
   val random = new scala.util.Random(0xcafe)
 
   /* sampled user histories */
+  //TODO whats a good estimate for the average number of interactions per user?
   val samplesOfA = Array.fill[IntArrayList](numUsers) { new IntArrayList(10) }
   val userInteractionCounts = Array.ofDim[Int](numUsers)
   val itemInteractionCounts = Array.ofDim[Int](numItems)
 
   /* cooccurrence matrix */
+  //TODO whats a good estimate for the average number of cooccurrences per item?
   val C = Array.fill[Int2IntOpenHashMap](numItems) { new Int2IntOpenHashMap(10) }
   /* rows sums of the cooccurrence matrix */
   val rowSumsOfC = Array.ofDim[Int](numItems)
@@ -26,33 +27,26 @@ class IncrementalCooccurrenceAnalysis(
 
   val indicators = Array.fill[IntArraySet](numItems) { new IntArraySet(k) }
 
-  implicit val COMPARE_SCORES = new Ordering[(Int, Double)] {
-    override def compare(x: (Int, Double), y: (Int, Double)): Int = {
-      x._2.compareTo(y._2)
-    }
-  }
-
   var numInteractionsObserved = 0
   var numInteractionsSampled = 0
   var numCooccurrencesObserved = 0L
 
-  def process(): Unit = {
+  def process(interactions: TraversableOnce[Interaction], batchSize: Int): (Long, Int) = {
 
     val start = System.currentTimeMillis()
 
-    interactions.foreach { interaction =>
+    val interactionsIterator = interactions.toIterator
+
+    val itemsToRescore = new IntArraySet(batchSize)
+
+    while (interactionsIterator.hasNext) {
+
+      val interaction = interactionsIterator.next()
 
       val user = interaction.user
       val item = interaction.item
 
       numInteractionsObserved += 1
-
-      if (numInteractionsObserved % 10000 == 0) {
-        val duration = System.currentTimeMillis() - start
-
-        println(s"Processed ${numInteractionsObserved} interactions... " +
-          s"interactions per ms: ${numInteractionsObserved.toDouble / duration}")
-      }
 
       if (itemInteractionCounts(item) < fMax) {
 
@@ -82,7 +76,7 @@ class IncrementalCooccurrenceAnalysis(
           itemInteractionCounts(item) += 1
           numInteractionsSampled += 1
 
-          rescore(item)
+          itemsToRescore.add(item)
         } else {
 
           val k = random.nextInt(userInteractionCounts(user) + 1)
@@ -114,20 +108,36 @@ class IncrementalCooccurrenceAnalysis(
             itemInteractionCounts(previousItem) -= 1
             numInteractionsSampled += 1
 
-            rescore(item)
+            itemsToRescore.add(item)
           }
 
         }
       }
     }
 
+    var numChanges = 0
+    val itemsToRescoreIterator = itemsToRescore.iterator()
+    while (itemsToRescoreIterator.hasNext) {
+      val change = rescore(itemsToRescoreIterator.nextInt())
+      if (change) {
+        numChanges += 1
+      }
+    }
+
+    val duration = System.currentTimeMillis() - start
+    (duration, numChanges)
   }
 
-  private[this] def rescore(item: Int) {
+  val queue = new PriorityQueue[(Int, Double)](k) {
+    override protected def lessThan(a: (Int, Double), b: (Int, Double)): Boolean = { a._2 < b._2 }
+  }
 
-    val queue = new BoundedPriorityQueue[(Int, Double)](k)(COMPARE_SCORES)
+  private[this] def rescore(item: Int): Boolean = {
 
-    val particularCooccurrences = C(item).int2IntEntrySet().fastIterator()
+    queue.clear()
+
+    val cooccurrencesOfItem = C(item).int2IntEntrySet()
+    val particularCooccurrences = cooccurrencesOfItem.fastIterator()
 
     while (particularCooccurrences.hasNext) {
       val entry = particularCooccurrences.next()
@@ -140,20 +150,31 @@ class IncrementalCooccurrenceAnalysis(
 
       val score = Loglikelihood.logLikelihoodRatio(k11, k12, k21, k22)
 
-      queue += otherItem -> score
+      if (queue.size < k) {
+        queue.add(otherItem -> score)
+      } else if (score > queue.top()._2) {
+        queue.updateTop(otherItem -> score)
+      }
     }
-
-    val topK = new IntArraySet(k)
-
-    queue.view.foreach { case  (otherItem, _) => topK.add(otherItem) }
 
     val previousTopK = indicators(item)
 
-    if (topK.size() != previousTopK.size() || !topK.retainAll(previousTopK) ) {
-      //println(s"Change for ${item}")
+    var changeDetected = false
+
+    if (queue.size() != previousTopK.size()) {
+      changeDetected = true
     } else {
-      //println(s"No Change for ${item}")
+
+      val topKIterator = queue.iterator()
+      while (topKIterator.hasNext && !changeDetected) {
+        val (otherItem, _) = topKIterator.next()
+        if (previousTopK.contains(otherItem)) {
+          changeDetected = true
+        }
+      }
     }
+
+    changeDetected
   }
 
 }
