@@ -1,5 +1,7 @@
 package io.ssc.incrementalcooccurrences
 
+import java.util.concurrent.{Callable, Executors}
+
 import it.unimi.dsi.fastutil.ints.{Int2IntOpenHashMap, IntArrayList, IntArraySet}
 
 class IncrementalCooccurrenceAnalysis(
@@ -8,7 +10,9 @@ class IncrementalCooccurrenceAnalysis(
     fMax: Int,
     kMax: Int,
     k: Int,
-    seed: Int) {
+    seed: Int) extends AutoCloseable {
+
+  val executorService = Executors.newFixedThreadPool(Runtime.getRuntime.availableProcessors)
 
   val random = new scala.util.Random(0xcafe)
 
@@ -20,16 +24,23 @@ class IncrementalCooccurrenceAnalysis(
 
   /* cooccurrence matrix */
   //TODO whats a good estimate for the average number of cooccurrences per item?
+  //TODO needs to be volatile?
   val C = Array.fill[Int2IntOpenHashMap](numItems) { new Int2IntOpenHashMap(10) }
   /* rows sums of the cooccurrence matrix */
+  //TODO needs to be volatile?
   val rowSumsOfC = Array.ofDim[Int](numItems)
 
-
+  //TODO needs to be volatile?
   val indicators = Array.fill[IntArraySet](numItems) { new IntArraySet(k) }
 
   var numInteractionsObserved = 0
   var numInteractionsSampled = 0
   var numCooccurrencesObserved = 0L
+
+
+  override def close() {
+    executorService.shutdownNow()
+  }
 
   def process(interactions: TraversableOnce[Interaction], batchSize: Int): (Long, Int) = {
 
@@ -115,11 +126,18 @@ class IncrementalCooccurrenceAnalysis(
       }
     }
 
-    var numChanges = 0
+    val tasks = new java.util.ArrayList[Callable[Boolean]](itemsToRescore.size())
     val itemsToRescoreIterator = itemsToRescore.iterator()
     while (itemsToRescoreIterator.hasNext) {
-      val change = rescore(itemsToRescoreIterator.nextInt())
-      if (change) {
+      tasks.add(new Rescorer(itemsToRescoreIterator.nextInt()))
+    }
+
+    val results = executorService.invokeAll(tasks)
+
+    var numChanges = 0
+    val resultsIterator = results.iterator()
+    while (resultsIterator.hasNext) {
+      if (resultsIterator.next().get) {
         numChanges += 1
       }
     }
@@ -128,53 +146,63 @@ class IncrementalCooccurrenceAnalysis(
     (duration, numChanges)
   }
 
-  val queue = new PriorityQueue[(Int, Double)](k) {
-    override protected def lessThan(a: (Int, Double), b: (Int, Double)): Boolean = { a._2 < b._2 }
-  }
+  class Rescorer(item: Int) extends Callable[Boolean] {
 
-  private[this] def rescore(item: Int): Boolean = {
+    override def call(): Boolean = {
 
-    queue.clear()
-
-    val cooccurrencesOfItem = C(item).int2IntEntrySet()
-    val particularCooccurrences = cooccurrencesOfItem.fastIterator()
-
-    while (particularCooccurrences.hasNext) {
-      val entry = particularCooccurrences.next()
-      val otherItem = entry.getIntKey
-
-      val k11 = entry.getIntValue.toLong
-      val k12 = rowSumsOfC(item).toLong - k11
-      val k21 = rowSumsOfC(otherItem) - k11
-      val k22 = numCooccurrencesObserved + k11 - k12 - k21
-
-      val score = Loglikelihood.logLikelihoodRatio(k11, k12, k21, k22)
-
-      if (queue.size < k) {
-        queue.add(otherItem -> score)
-      } else if (score > queue.top()._2) {
-        queue.updateTop(otherItem -> score)
+      //TODO can we reuse the queue?
+      val queue = new PriorityQueue[(Int, Double)](k) {
+        override protected def lessThan(a: (Int, Double), b: (Int, Double)): Boolean = { a._2 < b._2 }
       }
-    }
 
-    val previousTopK = indicators(item)
+      val cooccurrencesOfItem = C(item).int2IntEntrySet()
+      val particularCooccurrences = cooccurrencesOfItem.fastIterator()
 
-    var changeDetected = false
+      while (particularCooccurrences.hasNext) {
+        val entry = particularCooccurrences.next()
+        val otherItem = entry.getIntKey
 
-    if (queue.size() != previousTopK.size()) {
-      changeDetected = true
-    } else {
+        val k11 = entry.getIntValue.toLong
+        val k12 = rowSumsOfC(item).toLong - k11
+        val k21 = rowSumsOfC(otherItem) - k11
+        val k22 = numCooccurrencesObserved + k11 - k12 - k21
 
-      val topKIterator = queue.iterator()
-      while (topKIterator.hasNext && !changeDetected) {
-        val (otherItem, _) = topKIterator.next()
-        if (previousTopK.contains(otherItem)) {
-          changeDetected = true
+        val score = Loglikelihood.logLikelihoodRatio(k11, k12, k21, k22)
+
+        if (queue.size < k) {
+          queue.add(otherItem -> score)
+        } else if (score > queue.top()._2) {
+          queue.updateTop(otherItem -> score)
         }
       }
-    }
 
-    changeDetected
+      val previousTopK = indicators(item)
+
+      var changeDetected = false
+
+      if (queue.size != previousTopK.size) {
+        changeDetected = true
+      } else {
+
+        val topKIterator = queue.iterator()
+        while (topKIterator.hasNext && !changeDetected) {
+          val (otherItem, _) = topKIterator.next()
+          if (previousTopK.contains(otherItem)) {
+            changeDetected = true
+          }
+        }
+      }
+
+      if (changeDetected) {
+        indicators(item).clear()
+        val topKIterator = queue.iterator()
+        while (topKIterator.hasNext) {
+          indicators(item).add(topKIterator.next()._1)
+        }
+      }
+
+      changeDetected
+    }
   }
 
 }

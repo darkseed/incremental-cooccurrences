@@ -27,9 +27,16 @@ object Run extends App {
     seed = 0xcafeb
   )
 
-  while (batches.hasNext) {
-    val (durationForBatch, numChanges) = analysis.process(batches.next(), batchSize)
-    println(s"\tbatchSize=${batchSize}, numChanges=${numChanges}, throughput=${(batchSize.toDouble / durationForBatch * 1000.0).toInt}/s")
+  try {
+    while (batches.hasNext) {
+      val (durationForBatch, numChanges) = analysis.process(batches.next(), batchSize)
+      println(s"\tbatchSize=${batchSize}, " +
+        s"duration=${durationForBatch}, " +
+        s"numChanges=${numChanges}, " +
+        s"throughput=${(batchSize.toDouble / durationForBatch * 1000.0).toInt}/s")
+    }
+  } finally {
+    analysis.close()
   }
 
 }
