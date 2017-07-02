@@ -19,6 +19,7 @@ class IncrementalCooccurrenceAnalysis(
   /* sampled user histories */
   //TODO whats a good estimate for the average number of interactions per user?
   val samplesOfA = Array.fill[IntArrayList](numUsers) { new IntArrayList(10) }
+  val userNonSampledInteractionCounts = Array.ofDim[Int](numUsers)
   val userInteractionCounts = Array.ofDim[Int](numUsers)
   val itemInteractionCounts = Array.ofDim[Int](numItems)
 
@@ -57,18 +58,19 @@ class IncrementalCooccurrenceAnalysis(
       val user = interaction.user
       val item = interaction.item
 
+      userNonSampledInteractionCounts(user) += 1
       numInteractionsObserved += 1
 
       if (itemInteractionCounts(item) < fMax) {
 
-        val historyView = samplesOfA(user).elements()
-        val numItemsInHistoryView = samplesOfA(user).size()
+        val userHistory = samplesOfA(user).elements()
+        val numItemsInUserHistory = samplesOfA(user).size()
 
         if (userInteractionCounts(user) < kMax) {
 
           var n = 0
-          while (n < numItemsInHistoryView) {
-            val otherItem = historyView(n)
+          while (n < numItemsInUserHistory) {
+            val otherItem = userHistory(n)
 
             C(item).addTo(otherItem, 1)
             C(otherItem).addTo(item, 1)
@@ -78,8 +80,8 @@ class IncrementalCooccurrenceAnalysis(
             n += 1
           }
 
-          rowSumsOfC(item) += numItemsInHistoryView
-          numCooccurrencesObserved += 2 * numItemsInHistoryView
+          rowSumsOfC(item) += numItemsInUserHistory
+          numCooccurrencesObserved += 2 * numItemsInUserHistory
 
           samplesOfA(user).add(item)
 
@@ -90,15 +92,16 @@ class IncrementalCooccurrenceAnalysis(
           itemsToRescore.add(item)
         } else {
 
-          val k = random.nextInt(userInteractionCounts(user) + 1)
+          val k = random.nextInt(userNonSampledInteractionCounts(user) + 1)
 
-          if (k < kMax) {
+          if (k < numItemsInUserHistory) {
 
             val previousItem = samplesOfA(user).getInt(k)
+            //TODO we could check for previousItem == newItem
 
             var n = 0
-            while (n < numItemsInHistoryView) {
-              val otherItem = historyView(n)
+            while (n < numItemsInUserHistory) {
+              val otherItem = userHistory(n)
 
               if (n != k) {
                 C(item).addTo(otherItem, 1)
@@ -110,8 +113,8 @@ class IncrementalCooccurrenceAnalysis(
               n += 1
             }
 
-            rowSumsOfC(item) += numItemsInHistoryView - 1
-            rowSumsOfC(previousItem) -= numItemsInHistoryView - 1
+            rowSumsOfC(item) += numItemsInUserHistory - 1
+            rowSumsOfC(previousItem) -= numItemsInUserHistory - 1
 
             samplesOfA(user).set(k, item)
 
