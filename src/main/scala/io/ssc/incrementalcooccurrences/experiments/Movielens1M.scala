@@ -1,8 +1,10 @@
-package io.ssc.incrementalcooccurrences
+package io.ssc.incrementalcooccurrences.experiments
+
+import io.ssc.incrementalcooccurrences.{IncrementalCooccurrenceAnalysis, Interaction}
 
 import scala.io.Source
 
-object Run extends App {
+object Movielens1M extends App {
 
   val start = System.currentTimeMillis()
 
