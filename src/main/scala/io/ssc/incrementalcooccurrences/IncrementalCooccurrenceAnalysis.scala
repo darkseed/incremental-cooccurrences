@@ -25,14 +25,10 @@ class IncrementalCooccurrenceAnalysis(
 
   /* cooccurrence matrix */
   //TODO whats a good estimate for the average number of cooccurrences per item?
-  //TODO needs to be volatile?
-  //val C = Array.fill[Int2IntOpenHashMap](numItems) { new Int2IntOpenHashMap(10) }
   val C = Array.fill[Int2ShortOpenHashMap](numItems) { new Int2ShortOpenHashMap(10) }
   /* rows sums of the cooccurrence matrix */
-  //TODO needs to be volatile?
   val rowSumsOfC = Array.ofDim[Int](numItems)
 
-  //TODO needs to be volatile?
   val indicators = Array.fill[PriorityQueue[(Int, Double)]](numItems) {
     new PriorityQueue[(Int, Double)](k) {
       override protected def lessThan(a: (Int, Double), b: (Int, Double)): Boolean = { a._2 < b._2 }
@@ -55,6 +51,7 @@ class IncrementalCooccurrenceAnalysis(
     val interactionsIterator = interactions.toIterator
 
     val itemsToRescore = new IntArraySet(batchSize)
+
 
     while (interactionsIterator.hasNext) {
 
@@ -134,7 +131,7 @@ class IncrementalCooccurrenceAnalysis(
       }
     }
 
-    val tasks = new java.util.ArrayList[Callable[Boolean]](itemsToRescore.size())
+    val tasks = new java.util.ArrayList[Callable[Unit]](itemsToRescore.size())
     val itemsToRescoreIterator = itemsToRescore.iterator()
     while (itemsToRescoreIterator.hasNext) {
       tasks.add(new Rescorer(itemsToRescoreIterator.nextInt()))
@@ -142,25 +139,22 @@ class IncrementalCooccurrenceAnalysis(
 
     val results = executorService.invokeAll(tasks)
 
-    var numChanges = 0
     val resultsIterator = results.iterator()
     while (resultsIterator.hasNext) {
-      if (resultsIterator.next().get) {
-        numChanges += 1
-      }
+      resultsIterator.next().get()
     }
 
     val duration = System.currentTimeMillis() - start
-    (duration, numChanges)
+    (duration, itemsToRescore.size())
   }
 
-  class Rescorer(item: Int) extends Callable[Boolean] {
+  class Rescorer(item: Int) extends Callable[Unit] {
 
-    override def call(): Boolean = {
-
-      var changeInIndicators = false
+    override def call(): Unit = {
 
       val indicatorsForItem = indicators(item)
+
+      indicatorsForItem.clear()
 
       val cooccurrencesOfItem = C(item).int2ShortEntrySet()
       val particularCooccurrences = cooccurrencesOfItem.fastIterator()
@@ -178,14 +172,10 @@ class IncrementalCooccurrenceAnalysis(
 
         if (indicatorsForItem.size < k) {
           indicatorsForItem.add(otherItem -> score)
-          changeInIndicators = true
         } else if (score > indicatorsForItem.top()._2) {
           indicatorsForItem.updateTop(otherItem -> score)
-          changeInIndicators = true
         }
       }
-
-      changeInIndicators
     }
   }
 

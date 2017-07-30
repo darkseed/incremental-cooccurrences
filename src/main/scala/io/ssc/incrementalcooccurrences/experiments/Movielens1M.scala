@@ -31,10 +31,10 @@ object Movielens1M extends App {
 
   try {
     while (batches.hasNext) {
-      val (durationForBatch, numChanges) = analysis.process(batches.next(), batchSize)
+      val (durationForBatch, numRescored) = analysis.process(batches.next(), batchSize)
       println(s"\tbatchSize=${batchSize}, " +
         s"duration=${durationForBatch}, " +
-        s"numChanges=${numChanges}, " +
+        s"numRescored=${numRescored}, " +
         s"throughput=${(batchSize.toDouble / durationForBatch * 1000.0).toInt}/s")
     }
   } finally {
